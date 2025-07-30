@@ -7,7 +7,7 @@ you specify in the CloudFormation parameters. The value of `autosave_slots` in y
 `server-settings.json` **must be set to 1**. 
 This ensures that only a single autosave file(`_autosave1.zip`) is managed and backed up to S3. 
 Using more than one autosave slot will break the backup logic and may result in lost saves.
-  - For a simple setup you can use `server-settings/server-settings.json`
+  - For a simple setup you can use [server-settings/server-settings.json](server-settings/server-settings.json)
   - To upload the file:
     - Go to your S3 bucket in the AWS Console.
     - Upload your customized `server-settings.json` to the root of the bucket.
@@ -21,7 +21,7 @@ Using more than one autosave slot will break the backup logic and may result in 
     - Click "Choose file" and select your `factorio-server-template.yaml` from your local machine.
     - Click "Next".
     - Fill in the required parameters (e.g., S3 bucket name, instance type, backup interval, SSH CIDR IP). 
-      - See the [Parameters](#1-parameters) section below for details on each option.
+      - See the [Parameters](#parameters) section below for details on each option.
     - Click "Next" and configure stack options as needed (tags, permissions, etc.).
     - Click "Next" and review your settings.
     - Click "Create stack" to start the deployment.
