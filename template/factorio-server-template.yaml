@@ -1,0 +1,140 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Region-agnostic Factorio server using S3 for save persistence (no AMI needed)
+
+Parameters:
+  BucketName:
+    Type: String
+    Description: S3 bucket name for Factorio saves
+  InstanceType:
+    Type: String
+    Default: t2.micro
+    Description: EC2 instance type for the Factorio server (Default = t2.micro)
+  BackupInterval:
+    Type: Number
+    Default: 10
+    Description: Interval in minutes for automatic save file backups to S3 (Default = 10)
+  SshCidrIp:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: CIDR IP range allowed to SSH into the server (default = all IPs)
+
+Resources:
+
+  FactorioRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: FactorioS3Access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                  - s3:ListAllMyBuckets
+                Resource: !Sub arn:aws:s3:::${BucketName}/*
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub arn:aws:s3:::${BucketName}
+
+  FactorioInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref FactorioRole
+
+  FactorioSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow Factorio UDP and SSH
+      SecurityGroupIngress:
+        - IpProtocol: udp
+          FromPort: 34197
+          ToPort: 34197
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SshCidrIp
+
+  FactorioInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId:
+        Fn::Sub: "{{resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id}}"
+      IamInstanceProfile: !Ref FactorioInstanceProfile
+      SecurityGroupIds:
+        - !Ref FactorioSecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+
+          apt update
+          apt install -y wget unzip curl tmux
+
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip awscliv2.zip
+          ./aws/install
+
+          mkdir -p /opt/factorio
+          cd /opt/factorio
+
+          wget https://factorio.com/get-download/latest/headless/linux64 -O factorio_headless.tar.xz
+          tar -xvf factorio_headless.tar.xz --strip-components=1
+          rm factorio_headless.tar.xz
+
+          SAVE_PATH="/opt/factorio/saves/latest.zip"
+          AUTO_SAVE_PATH="/opt/factorio/saves/_autosave1.zip"
+          SETTINGS_PATH="/opt/factorio/data/server-settings.json"
+          mkdir -p /opt/factorio/saves
+
+          if aws s3 ls s3://${BucketName}/latest.zip; then
+            aws s3 cp s3://${BucketName}/latest.zip $SAVE_PATH
+          else
+            ./bin/x64/factorio --create $SAVE_PATH
+          fi
+          if aws s3 ls s3://${BucketName}/server-settings.json; then
+            aws s3 cp s3://${BucketName}/server-settings.json $SETTINGS_PATH
+          fi
+
+          CRON_JOB="*/${BackupInterval} * * * * root aws s3 cp $AUTO_SAVE_PATH s3://${BucketName}/latest.zip"
+          grep -qxF "$CRON_JOB" /etc/crontab || echo "$CRON_JOB" >> /etc/crontab
+
+          # Create systemd service
+          cat <<EOF > /etc/systemd/system/factorio.service
+          [Unit]
+          Description=Factorio Server
+          After=network.target
+
+          [Service]
+          Type=simple
+          WorkingDirectory=/opt/factorio
+          ExecStart=/opt/factorio/bin/x64/factorio --start-server /opt/factorio/saves/latest.zip --server-settings /opt/factorio/data/server-settings.json
+          Restart=always
+          User=root
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+
+          systemctl daemon-reload
+          systemctl enable factorio
+          systemctl start factorio
+Outputs:
+  InstancePublicIP:
+    Description: Public IP of the Factorio server
+    Value: !GetAtt FactorioInstance.PublicIp
+  FactorioPort:
+    Description: Factorio UDP port
+    Value: 34197
